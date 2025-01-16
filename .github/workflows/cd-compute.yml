@@ -101,43 +101,57 @@ jobs:
       - name: Trigger JCloudify deployment
         id: trigger-deployment
         run: |
+          app_env_deployment_id="${{ env.app_env_deployment_id }}"
           env_depl_conf_id="${{ github.event.inputs.env_depl_conf_id }}"
+          TAG_NAME="null"
+          TAG_MESSAGE="null"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "$env_depl_conf_id" ]]; then
+            TAG_NAME="${app_env_deployment_id}"
+            TAG_MESSAGE="jcloudify: deployment ID: ${app_env_deployment_id}"            
+          fi
+          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+          echo "TAG_MESSAGE=$TAG_MESSAGE" >> $GITHUB_ENV
+          
           if [ -z "$env_depl_conf_id" ]; then
             env_depl_conf_id="null"
           fi
           echo "env_depl_conf_id=$env_depl_conf_id" >> $GITHUB_ENV
+      
           curl --fail -X PUT "https://api.preprod.jcloudify.com/gh-repos/${{ github.repository }}/env-deploys?environment_type=$(echo "${{ github.ref_name }}" | tr '[:lower:]' '[:upper:]')" \
-                -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-                -H "Content-Type: application/json" \
-                -d "$(jq -n \
-                  --arg env_depl_conf_id "$env_depl_conf_id" \
-                  --arg formatted_bucket_key "${{ env.to_upload_filename }}" \
-                  --arg id "${{ steps.generate-uuid.outputs.uuid }}" \
-                  --arg commit_sha "${{ github.sha }}" \
-                  --arg app_env_deployment_id "${{ env.app_env_deployment_id }}" \
-                  --arg environment_type "$(echo "${{ github.ref_name }}" | tr '[:lower:]' '[:upper:]')" \
-                  '{
-                    env_depl_conf_id: ($env_depl_conf_id | if . == "null" then null else . end),
-                    formatted_bucket_key: $formatted_bucket_key,
-                    id: $id,
-                    commit_sha: $commit_sha,
-                    app_env_deployment_id: $app_env_deployment_id,
-                    environment_type: $environment_type
-                  }')"
-
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n \
+              --arg env_depl_conf_id "$env_depl_conf_id" \
+              --arg formatted_bucket_key "${{ env.to_upload_filename }}" \
+              --arg id "${{ steps.generate-uuid.outputs.uuid }}" \
+              --arg commit_sha "${{ github.sha }}" \
+              --arg app_env_deployment_id "${{ env.app_env_deployment_id }}" \
+              --arg environment_type "$(echo "${{ github.ref_name }}" | tr '[:lower:]' '[:upper:]')" \
+              --arg tag_name "${{ env.TAG_NAME }}" \
+              --arg tag_message "${{ env.TAG_MESSAGE }}" \
+              '{
+                env_depl_conf_id: ($env_depl_conf_id | if . == "null" then null else . end),
+                formatted_bucket_key: $formatted_bucket_key,
+                id: $id,
+                commit_sha: $commit_sha,
+                app_env_deployment_id: $app_env_deployment_id,
+                environment_type: $environment_type,
+                tag_name: ($tag_name | if . == "null" then null else . end),
+                tag_message: ($tag_message | if . == "null" then null else . end)
+              }')"
+      
       - name: Tag commit if deployment with custom conf succeeded
-        if: ${{ steps.trigger-deployment.outputs.env_depl_conf_id != 'null' && github.event.inputs.env_depl_conf_id != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.app_env_depl_id != '' && github.event.inputs.env_depl_conf_id != '' && env.TAG_NAME != 'null' && env.TAG_MESSAGE != 'null' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ env.TAG_NAME }}
+          TAG_MESSAGE: ${{ env.TAG_MESSAGE }}
         run: |
           git config user.name "jcloudify[bot]"
           git config user.email "jcloudifybot@noreply.com"
-          TAG_NAME="${{ env.app_env_deployment_id }}"
-          TAG_MESSAGE="jcloudify: deployment ID: ${{ env.app_env_deployment_id }}"
-          git tag -a $TAG_NAME -m "$TAG_MESSAGE"
-          git push origin $TAG_NAME
-   
-            
+          git tag -a "$TAG_NAME" -m "$TAG_MESSAGE"
+          git push origin "$TAG_NAME"
+          
       - name: Update github state if step fails
         if: failure()
         run: |
@@ -165,8 +179,5 @@ jobs:
                     commit_message: $commit_message,
                     commit_author_name: $commit_author,
                     status: $status,
-                    environment_type: $environment_type
-                  }')")
-
-          echo "app_env_deployment_id=$(echo $response | jq -r '.app_env_deployment_id')" >> $GITHUB_ENV
-          echo $response
+                  environment_type: $environment_type
+                }')")
